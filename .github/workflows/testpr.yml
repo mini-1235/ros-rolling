@@ -10,6 +10,56 @@ env:
   IGNORE_CACHE_AND_DO_FULL_REBUILD: 'false'
 
 jobs:
+  vinca-snapshot-metadata:
+    name: Vinca snapshot metadata
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+
+    - uses: prefix-dev/setup-pixi@v0.9.4
+      with:
+        frozen: true
+
+    - name: Generate the snapshotted moveit_py recipe
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      shell: bash -l {0}
+      run: |
+        pixi run python - <<'PY'
+        from pathlib import Path
+        import re
+
+        path = Path("vinca.yaml")
+        config = path.read_text()
+
+        def replace_list(key, items):
+            global config
+            start = re.search(rf"(?m)^{key}:.*$", config)
+            if start is None:
+                raise RuntimeError(f"Missing {key} in {path}")
+            following = re.search(r"(?m)^[A-Za-z_][A-Za-z0-9_]*:.*$", config[start.end():])
+            end = start.end() + following.start() if following else len(config)
+            value = f"{key}:" + "".join(f"\n  - {item}" for item in items) + "\n\n"
+            config = config[:start.start()] + value + config[end:]
+
+        replace_list("packages_skip_by_deps", [])
+        replace_list("skip_existing", [])
+        replace_list("packages_select_by_deps", ["moveit_py"])
+        path.write_text(config)
+        PY
+        mkdir -p recipes
+        pixi run -v vinca --platform linux-64 -m
+
+    - name: Verify source and dependency metadata use the snapshot
+      shell: bash -l {0}
+      run: |
+        recipe=recipes/ros-rolling-moveit-py/recipe.yaml
+        grep -F "release/rolling/moveit_py/2.14.1-2" "$recipe"
+        grep -F "ros-rolling-pybind11-vendor" "$recipe"
+
   build:
     strategy:
       fail-fast: false
